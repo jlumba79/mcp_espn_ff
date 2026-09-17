@@ -18,12 +18,54 @@ try:
     log_error("Initializing FastMCP server...")
     mcp = FastMCP("espn-fantasy-football", dependencies=['espn-api'])
 
+    # Load .env from this file's directory, so defaults resolve no matter what
+    # working directory the MCP client launches us from.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    except ImportError:
+        pass
+
+    def _env_int(name):
+        raw = os.environ.get(name, "").strip()
+        try:
+            return int(raw) if raw else None
+        except ValueError:
+            log_error(f"Ignoring non-numeric {name}={raw!r}")
+            return None
+
     # Constants
-    CURRENT_YEAR = datetime.datetime.now().year
-    if datetime.datetime.now().month < 7:  # If before July, use previous year
-        CURRENT_YEAR -= 1
+    CURRENT_YEAR = _env_int("ESPN_SEASON")
+    if CURRENT_YEAR is None:
+        CURRENT_YEAR = datetime.datetime.now().year
+        if datetime.datetime.now().month < 7:  # If before July, use previous year
+            CURRENT_YEAR -= 1
+
+    DEFAULT_LEAGUE_ID = _env_int("ESPN_LEAGUE_ID")
+    DEFAULT_TEAM_ID = _env_int("ESPN_TEAM_ID")
 
     log_error(f"Using football year: {CURRENT_YEAR}")
+    log_error(f"Default league: {DEFAULT_LEAGUE_ID}, default team: {DEFAULT_TEAM_ID}")
+
+    def resolve_league_id(league_id):
+        """Fall back to ESPN_LEAGUE_ID when the caller omits the league."""
+        resolved = league_id or DEFAULT_LEAGUE_ID
+        if resolved is None:
+            raise ValueError(
+                "No league_id given and ESPN_LEAGUE_ID is not set in .env. "
+                "Pass a league_id or set it in .env."
+            )
+        return resolved
+
+    def resolve_team_id(team_id):
+        """Fall back to ESPN_TEAM_ID when the caller omits the team."""
+        resolved = team_id or DEFAULT_TEAM_ID
+        if resolved is None:
+            raise ValueError(
+                "No team_id given and ESPN_TEAM_ID is not set in .env. "
+                "Pass a team_id or set it in .env."
+            )
+        return resolved
 
     class ESPNFantasyFootballAPI:
         def __init__(self):
@@ -77,12 +119,6 @@ try:
 
     # Seed credentials from .env / the environment so private leagues work
     # without re-running authenticate() on every server start.
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
-    except ImportError:
-        pass
-
     _env_s2 = os.environ.get("ESPN_S2")
     _env_swid = os.environ.get("SWID")
     if _env_s2 and _env_swid:
@@ -108,16 +144,17 @@ try:
             return f"Authentication error: {str(e)}"
 
     @mcp.tool()
-    async def get_league_info(league_id: int, year: int = CURRENT_YEAR) -> str:
+    async def get_league_info(league_id: int = None, year: int = CURRENT_YEAR) -> str:
         """Get basic information about a fantasy football league.
         
         Args:
-            league_id: The ESPN fantasy football league ID
+            league_id: Optional. Defaults to ESPN_LEAGUE_ID from .env
             year: Optional year for historical data (defaults to current season)
         """
         try:
             log_error(f"Getting league info for league {league_id}, year {year}")
             # Get league using stored credentials
+            league_id = resolve_league_id(league_id)
             league = api.get_league(SESSION_ID, league_id, year)
             
             info = {
@@ -140,20 +177,22 @@ try:
             return f"Error retrieving league: {str(e)}"
 
     @mcp.tool()
-    async def get_team_roster(league_id: int, team_id: int, year: int = CURRENT_YEAR) -> str:
+    async def get_team_roster(league_id: int = None, team_id: int = None, year: int = CURRENT_YEAR) -> str:
         """Get a team's current roster.
         
         Args:
-            league_id: The ESPN fantasy football league ID
-            team_id: The team ID in the league (usually 1-12)
+            league_id: Optional. Defaults to ESPN_LEAGUE_ID from .env
+            team_id: Optional. Defaults to ESPN_TEAM_ID from .env (the user's own team)
             year: Optional year for historical data (defaults to current season)
         """
         try:
             log_error(f"Getting team roster for league {league_id}, team {team_id}, year {year}")
             # Get league using stored credentials
+            league_id = resolve_league_id(league_id)
             league = api.get_league(SESSION_ID, league_id, year)
             
             # Team IDs in ESPN API are 1-based
+            team_id = resolve_team_id(team_id)
             if team_id < 1 or team_id > len(league.teams):
                 return f"Invalid team_id. Must be between 1 and {len(league.teams)}"
             
@@ -187,20 +226,22 @@ try:
             return f"Error retrieving team roster: {str(e)}"
         
     @mcp.tool()
-    async def get_team_info(league_id: int, team_id: int, year: int = CURRENT_YEAR) -> str:
+    async def get_team_info(league_id: int = None, team_id: int = None, year: int = CURRENT_YEAR) -> str:
         """Get a team's general information. Including points scored, transactions, etc.
 
         Args:
-            league_id: The ESPN fantasy football league ID
-            team_id: The team ID in the league (usually 1-12)
+            league_id: Optional. Defaults to ESPN_LEAGUE_ID from .env
+            team_id: Optional. Defaults to ESPN_TEAM_ID from .env (the user's own team)
             year: Optional year for historical data (defaults to current season)
         """
         try:
             log_error(f"Getting team info for league {league_id}, team {team_id}, year {year}")
             # Get league using stored credentials
+            league_id = resolve_league_id(league_id)
             league = api.get_league(SESSION_ID, league_id, year)
 
             # Team IDs in ESPN API are 1-based
+            team_id = resolve_team_id(team_id)
             if team_id < 1 or team_id > len(league.teams):
                 return f"Invalid team_id. Must be between 1 and {len(league.teams)}"
             
@@ -233,17 +274,18 @@ try:
             return f"Error retrieving team results: {str(e)}"
 
     @mcp.tool()
-    async def get_player_stats(league_id: int, player_name: str, year: int = CURRENT_YEAR) -> str:
+    async def get_player_stats(player_name: str, league_id: int = None, year: int = CURRENT_YEAR) -> str:
         """Get stats for a specific player.
         
         Args:
-            league_id: The ESPN fantasy football league ID
+            league_id: Optional. Defaults to ESPN_LEAGUE_ID from .env
             player_name: Name of the player to search for
             year: Optional year for historical data (defaults to current season)
         """
         try:
             log_error(f"Getting player stats for {player_name} in league {league_id}, year {year}")
             # Get league using stored credentials
+            league_id = resolve_league_id(league_id)
             league = api.get_league(SESSION_ID, league_id, year)
             
             # Search for player by name
@@ -280,16 +322,17 @@ try:
             return f"Error retrieving player stats: {str(e)}"
 
     @mcp.tool()
-    async def get_league_standings(league_id: int, year: int = CURRENT_YEAR) -> str:
+    async def get_league_standings(league_id: int = None, year: int = CURRENT_YEAR) -> str:
         """Get current standings for a league.
         
         Args:
-            league_id: The ESPN fantasy football league ID
+            league_id: Optional. Defaults to ESPN_LEAGUE_ID from .env
             year: Optional year for historical data (defaults to current season)
         """
         try:
             log_error(f"Getting league standings for league {league_id}, year {year}")
             # Get league using stored credentials
+            league_id = resolve_league_id(league_id)
             league = api.get_league(SESSION_ID, league_id, year)
             
             # Sort teams by wins (descending), then points (descending)
@@ -319,17 +362,18 @@ try:
             return f"Error retrieving league standings: {str(e)}"
 
     @mcp.tool()
-    async def get_matchup_info(league_id: int, week: int = None, year: int = CURRENT_YEAR) -> str:
+    async def get_matchup_info(league_id: int = None, week: int = None, year: int = CURRENT_YEAR) -> str:
         """Get matchup information for a specific week.
         
         Args:
-            league_id: The ESPN fantasy football league ID
+            league_id: Optional. Defaults to ESPN_LEAGUE_ID from .env
             week: The week number (if None, uses current week)
             year: Optional year for historical data (defaults to current season)
         """
         try:
             log_error(f"Getting matchup info for league {league_id}, week {week}, year {year}")
             # Get league using stored credentials
+            league_id = resolve_league_id(league_id)
             league = api.get_league(SESSION_ID, league_id, year)
             
             if week is None:
