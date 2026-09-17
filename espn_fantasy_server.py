@@ -1,5 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 from espn_api.football import League
+import os
 import sys
 import datetime
 import logging
@@ -73,6 +74,19 @@ try:
 
     # Store a session map
     SESSION_ID = "default_session"
+
+    # Seed credentials from .env / the environment so private leagues work
+    # without re-running authenticate() on every server start.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    except ImportError:
+        pass
+
+    _env_s2 = os.environ.get("ESPN_S2")
+    _env_swid = os.environ.get("SWID")
+    if _env_s2 and _env_swid:
+        api.store_credentials(SESSION_ID, _env_s2, _env_swid)
 
     @mcp.tool()
     async def authenticate(espn_s2: str, swid: str) -> str:
